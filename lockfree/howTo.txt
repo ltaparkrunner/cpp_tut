@@ -1,0 +1,3 @@
+Williams Anthony, "C++ Concurrency in Action, 2nd Edition"
+https://github.com/anthonywilliams/ccia_code_samples
+Maurice Herlihy, Nir Shavit "The Art of Multiprocessor Programming"

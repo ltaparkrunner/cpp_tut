@@ -1,0 +1,85 @@
+for co_await the should need awaitable and awaiter
+
+awaitable is that goes after co_await. Like this "co_await  expr". 
+expr can be another coroutine (Task): timer, I/O operation and others
+
+
+Awaitable (Ожидаемый объект)
+
+Awaitable — это общее понятие (концепт) для любого выражения или объекта, с которым может работать оператор co_await.
+Чтобы объект считался Awaitable, он должен предоставлять способ получить Awaiter — либо напрямую имея нужные методы, 
+либо через перегрузку оператора operator co_await(). То есть это то, что вы передаете оператору co_await
+
+
+Awaiter (Исполнитель ожидания)
+
+Awaiter — это конкретный объект, который непосредственно управляет процессом приостановки и возобновления корутины.
+Для работы Awaiter должен реализовывать три главных метода (интерфейс):
+1. bool await_ready() const noexcept
+	• Вызывается первым.
+	• Если возвращает true, корутина не приостанавливается, а выполняется дальше сразу же (как будто co_await и не было).
+	• Если false — корутина официально ставится на паузу, и вызывается следующий метод.
+2. void await_suspend(std::coroutine_handle<> handle) noexcept (или возвращает bool / другую корутину)
+	• Вызывается в момент приостановки корутины.
+	• Здесь можно запустить асинхронную задачу (например, таймер или отправку пакета в сети) и сохранить переданный handle (хрустящий «паспорт» корутины).
+	• Когда асинхронная задача завершится, из любого потока или колбэка вызывается handle.resume(), чтобы разбудить корутину.
+3. T await_resume() const noexcept
+	• Вызывается, когда корутина «проснулась» (после вызова handle.resume()).
+	• Возвращает результат всей операции (тип T или void), который пойдет дальше в код после co_await
+
+schematic in cpp: 
+"
+struct MyAwaiter {
+    bool await_ready() const noexcept {
+        return false; // Всегда приостанавливаем корутину
+    }
+
+    void await_suspend(std::coroutine_handle<> handle) noexcept {
+        // Запускаем асинхронную работу и передаем ей handle, 
+        // чтобы в нужный момент вызвать handle.resume()
+        start_async_task([handle]() {
+            handle.resume(); 
+        });
+    }
+
+    int await_resume() const noexcept {
+        return 42; // Возвращаем результат в корутину
+    }
+};
+
+struct MyAwaitable {
+    MyAwaiter operator co_await() const noexcept {
+        return MyAwaiter{};
+    }
+};
+"
+what does the line return { std::coroutine_handle<promise_type>::from_promise(*this) }; mean?
+1. *this
+Поскольку метод get_return_object() находится внутри структуры promise_type, *this ссылается на текущий объект-обещание (promise object). Этот объект автоматически создается компилятором в куче (heap) вместе со всем состоянием корутины (фреймом корутины), когда функция-корутина вызывается.
+2. std::coroutine_handle<promise_type>::from_promise(*this)
+Это статический метод стандарта C++20. Корутины и их обещания лежат в памяти по строго определенным правилам. Данный метод выполняет арифметику указателей «наоборот»: зная адрес объекта promise_type, он вычисляет адрес самого фрейма корутины и создает объект std::coroutine_handle. С этого момента через полученный хэндл можно управлять корутиной снаружи (ставить на паузу, возобновлять через .resume() или уничтожать через .destroy()).
+3. return { ... };
+Фигурные скобки запускают обобщенную инициализацию (aggregate initialization или вызов конструктора) для структуры ReturnObject, которая указана как тип возвращаемого значения функции. Это значит, что созданный std::coroutine_handle передается в конструктор (или присваивается соответствующему полю) объекта ReturnObject.
+
+чтобы запустить корутину после корутины -- в final_suspend()
+сохранить coroutine_handle следующей корутины внутри promise_type
+механизм: final_suspend возвращает awaiter
+          в await_suspend вызывается next_resume()
+
+
+как работает simple_await.cpp 
+"Поток-вызыватель (например, main)
+       |
+       v
+Вызов resuming_on_new_thread()
+       |
+       +---> 1. Создание promise_type в памяти
+       |
+       +---> 2. Вызов promise.get_return_object() -> Создается task
+       |
+       +---> 3. [ОБЪЕКТ task ВОЗВРАЩЕН В MAIN] -> main может идти дальше
+       |
+       +---> 4. Вызов initial_suspend() (не засыпает)
+       |
+       +---> 5. Выполнение первого std::cout << "Сопрограмма запущена...""
+
